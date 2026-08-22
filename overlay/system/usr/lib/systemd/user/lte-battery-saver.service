@@ -1,0 +1,11 @@
+# Can be manually enabled by user
+# default is disabled
+
+[Unit]
+Description=LTE Battery Saver
+
+[Service]
+ExecStart=/bin/bash -c "/usr/libexec/lte-battery-saver"
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,19 @@
+#!/bin/bash
+
+primary_preference="lte"
+saving_preference="gsm"
+sim_slot="/ril_0"
+
+interface=com.canonical.Unity.Screen
+member=DisplayPowerStateChange
+
+dbus-monitor --system "type=signal,interface='${interface}',member='${member}'" |
+while read -r line; do
+	if [[ ${line} == *"int32 0" ]]; then
+		read
+		/usr/share/ofono/scripts/set-tech-preference "${sim_slot}" "${saving_preference}" 1>/dev/null
+	elif [[ ${line} == *"int32 1" ]]; then
+		read
+		/usr/share/ofono/scripts/set-tech-preference "${sim_slot}" "${primary_preference}" 1>/dev/null
+	fi
+done

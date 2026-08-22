@@ -1,0 +1,13 @@
+#!/bin/bash
+interface=core.trust.dbus.Agent
+member=AuthenticateRequestWithParameters
+
+dbus-monitor --session "type=method_call,interface='${interface}',member='${member}'" |
+while read -r line; do
+      if [[ ${line} == *"string"* ]]; then
+         parecord -r > /dev/null &
+         pid=$!
+         sleep 1
+         kill $pid
+      fi
+done

@@ -1,0 +1,26 @@
+FP3:
+  Names:
+    - fp3
+    - FP3
+    - Fairphone 3
+  PrettyName: Fairphone 3
+  DeviceType: phone
+  GridUnit: 23
+  WebkitDpr: 2.3
+  PrimaryOrientation: Portrait
+  SupportedOrientations:
+    - Portrait
+    - Landscape
+    - InvertedLandscape
+  MirAndroidPlatformClientFenceSync:
+    - "all"
+  MirAndroidPlatformServerEglSync: False
+  MirAndroidPlatformServerPartialUpdates: True
+  FlashlightSysfsPath:
+    - /sys/class/leds/led:torch_0/brightness
+  FlashlightSwitchPath:
+    - /sys/class/leds/led:switch_0/brightness
+  PulseaudioModulesDroid_ExtraCardArgs: "rate=48000"
+  FilesystemEncryption: true
+  OfonoPlugin: binder
+  OfonoImplementsIms: true

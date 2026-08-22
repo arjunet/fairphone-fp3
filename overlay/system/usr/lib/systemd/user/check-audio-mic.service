@@ -1,0 +1,13 @@
+[Unit]
+Description=Check Microphone
+
+# fixes issue, that microphone does not work after a call, except for calls,
+# see https://github.com/ubports/ubuntu-touch/issues/2022
+
+Wants=pulseaudio.service
+
+[Service]
+ExecStart=/bin/bash -c "/usr/libexec/check-microphone"
+
+[Install]
+WantedBy=default.target
