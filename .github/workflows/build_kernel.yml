@@ -61,8 +61,7 @@ jobs:
           sudo -n ./build/system-image-from-ota.sh ota/ubuntu_command images
           test -s images/boot.img
           test -s images/rootfs.img
-          sha256sum images/boot.img images/rootfs.img | tee images/SHA256SUMS.txt
-          ls -lh images/boot.img images/rootfs.img images/SHA256SUMS.txt
+          ls -lh images/boot.img images/rootfs.img
 
       - name: Upload boot and rootfs images
         uses: actions/upload-artifact@v4
@@ -71,6 +70,6 @@ jobs:
           path: |
             images/boot.img
             images/rootfs.img
-            images/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 7
+
