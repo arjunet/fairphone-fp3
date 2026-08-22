@@ -1,0 +1,76 @@
+name: Ginna Ubuntu Touch Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ginna-ubuntu-touch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ginna boot and rootfs images
+    runs-on: self-hosted
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out the device repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify required runner tools
+        run: |
+          set -euxo pipefail
+          command -v bc
+          command -v bison
+          command -v flex
+          command -v git
+          command -v img2simg
+          command -v python2
+          command -v xz
+
+      - name: Remove stale kernel source and build objects
+        run: |
+          set -euxo pipefail
+          rm -rf \
+            workdir/downloads/android_kernel_motorola_sdm632 \
+            workdir/downloads/KERNEL_OBJ
+
+      - name: Build Ubuntu Touch package
+        run: |
+          set -euxo pipefail
+          ./build.sh -b workdir
+
+      - name: Create fake OTA package
+        run: |
+          set -euxo pipefail
+          ./build/prepare-fake-ota.sh out/device_ginna_usrmerge.tar.xz ota
+
+      - name: Create flashable boot and rootfs images
+        run: |
+          set -euxo pipefail
+          sudo -n ./build/system-image-from-ota.sh ota/ubuntu_command images
+          test -s images/boot.img
+          test -s images/rootfs.img
+          sha256sum images/boot.img images/rootfs.img | tee images/SHA256SUMS.txt
+          ls -lh images/boot.img images/rootfs.img images/SHA256SUMS.txt
+
+      - name: Upload boot and rootfs images
+        uses: actions/upload-artifact@v4
+        with:
+          name: ginna-images-${{ github.sha }}
+          path: |
+            images/boot.img
+            images/rootfs.img
+            images/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
