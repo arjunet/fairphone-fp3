@@ -26,6 +26,12 @@ lxc.autodev = 0
 # Doing part of Android's first stage init
 lxc.mount.entry = tmpfs dev tmpfs nosuid,mode=0755 0 0
 lxc.mount.entry = /dev/__properties__ dev/__properties__ bind bind,create=dir 0 0
+
+# Android 10 has three Binder IPC domains. binderfs is unavailable on the
+# ginna kernel, so bind the raw host device nodes into Android's fresh /dev.
+lxc.mount.entry = /dev/binder dev/binder none bind,create=file 0 0
+lxc.mount.entry = /dev/hwbinder dev/hwbinder none bind,create=file 0 0
+lxc.mount.entry = /dev/vndbinder dev/vndbinder none bind,create=file 0 0
 lxc.mount.entry = /dev/binderfs dev/binderfs bind bind,create=dir,optional 0 0
 
 # Moto E 2020 (ginna): Qualcomm QSEE secure-world interface required by
