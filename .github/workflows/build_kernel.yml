@@ -22,12 +22,6 @@ jobs:
         shell: bash
 
     steps:
-      - name: Show runner identity
-        run: |
-          whoami
-          pwd
-          realpath ./build/system-image-from-ota.sh
-
       - name: Check out the device repository
         uses: actions/checkout@v4
         with:
