@@ -63,13 +63,3 @@ jobs:
           test -s images/rootfs.img
           ls -lh images/boot.img images/rootfs.img
 
-      - name: Upload boot and rootfs images
-        uses: actions/upload-artifact@v4
-        with:
-          name: ginna-images-${{ github.sha }}
-          path: |
-            images/boot.img
-            images/rootfs.img
-          if-no-files-found: error
-          retention-days: 7
-
