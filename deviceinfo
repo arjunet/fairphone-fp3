@@ -1,7 +1,11 @@
 deviceinfo_name="moto e (2020)"
 deviceinfo_manufacturer="Motorola"
 deviceinfo_codename="ginna"
-deviceinfo_arch="aarch64"
+
+deviceinfo_arch="arm"
+deviceinfo_kernel_arch="aarch64"
+
+
 deviceinfo_kernel_source="https://github.com/arjunet/android_kernel_motorola_sdm632.git"
 deviceinfo_kernel_source_branch="lineage-17.1"
 deviceinfo_kernel_defconfig="ginna_defconfig halium.config"
