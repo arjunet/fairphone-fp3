@@ -1,0 +1,9 @@
+# Sourced by /usr/share/ubuntu-touch-session/lsc-wrapper before it execs
+# lomiri-system-compositor.
+#
+# ginna (SDM632 / Adreno 506): libEGL_adreno.so dlopen()s libGLESv2_adreno.so
+# and eglSubDriverAndroid.so by bare soname. Stock ld.config.29.txt only lists
+# /vendor/lib/egl in the sphal namespace, so the host libhybris linker cannot
+# find them ("dlopen failed: library ... not found") and the compositor comes
+# up with no GL. Point HYBRIS_LD_LIBRARY_PATH at the vendor GL dirs explicitly.
+export HYBRIS_LD_LIBRARY_PATH=/vendor/lib/egl:/vendor/lib/hw:/vendor/lib:/system/lib:/system/lib/vndk-sp-29
