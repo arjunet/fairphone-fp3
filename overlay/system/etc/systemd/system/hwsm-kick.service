@@ -1,0 +1,20 @@
+[Unit]
+Description=Ensure Android hwservicemanager survives the early-boot binder race
+After=lxc-android-config.service android-container.service
+Before=lightdm.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Wait for the Android container, then make sure hwservicemanager is actually
+# up. If it lost the boot race, ctl.restart brings it (and the whole HAL
+# stack) up cleanly. Always exits 0 so it can never block boot.
+ExecStart=/bin/sh -c 'for i in $(seq 1 60); do \
+    lxc-info -n android >/dev/null 2>&1 || { sleep 2; continue; }; \
+    [ "$(lxc-attach -n android -- /system/bin/getprop hwservicemanager.ready 2>/dev/null)" = true ] && exit 0; \
+    lxc-attach -n android -- /system/bin/setprop ctl.restart hwservicemanager 2>/dev/null; \
+    sleep 2; \
+done; exit 0'
+
+[Install]
+WantedBy=multi-user.target

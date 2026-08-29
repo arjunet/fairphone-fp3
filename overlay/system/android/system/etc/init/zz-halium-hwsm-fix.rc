@@ -1,0 +1,13 @@
+service hwservicemanager /system/bin/hwservicemanager
+    class core
+    user system
+    group system readproc
+    critical
+    onrestart class_restart hal
+    disabled
+    override
+
+on post-fs
+    wait /dev/hwbinder 20
+    wait /dev/binder 20
+    start hwservicemanager
