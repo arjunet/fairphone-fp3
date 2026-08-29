@@ -16,6 +16,13 @@ qemu|kvm)
     export MIR_MESA_KMS_DISABLE_MODESET_PROBE=1
 esac
 
+# ginna (SDM632 / Adreno 506): libEGL_adreno.so dlopen()s libGLESv2_adreno.so
+# and eglSubDriverAndroid.so by bare soname. Stock ld.config.29.txt only lists
+# /vendor/lib/egl in the sphal namespace, so the host libhybris linker cannot
+# find them ("dlopen failed: library ... not found") and the compositor comes
+# up with no GL. Point HYBRIS_LD_LIBRARY_PATH at the vendor GL dirs explicitly.
+export HYBRIS_LD_LIBRARY_PATH=/vendor/lib/egl:/vendor/lib/hw:/vendor/lib:/system/lib:/system/lib/vndk-sp-29
+
 # Hybris devices tends to have the TLS (thread-local storage) area clobbered by
 # the Bionic libc. This LD_PRELOAD reserves some space for Bionic libc to clober,
 # so that it doesn't crash.

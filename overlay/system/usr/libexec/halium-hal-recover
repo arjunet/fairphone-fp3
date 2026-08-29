@@ -1,0 +1,52 @@
+#!/bin/sh
+# halium-hal-recover  (runs on the HOST, backgrounded from lxc-android-config's
+# device-hacks)
+#
+# Early-boot binder race on ginna: hwservicemanager and a batch of vendor HALs
+# (notably vendor.gralloc-2-0 / vendor.hwcomposer-2-1) can be started by the
+# container's init before /dev/hwbinder is a usable binder node. They fail with
+# EBADF ("Failed to setup binder polling: -9" / "Binder driver could not be
+# opened"), crash ~4x, and init - treating them as critical - gives up.
+#
+# zz-halium-hwsm-fix.rc handles hwservicemanager itself; this mops up the rest:
+# once the container and binder are settled, restart every service still stuck
+# in "restarting". Always exits 0.
+
+CONTAINER=android
+LXC="lxc-attach -n $CONTAINER --"
+
+log() { echo "halium-hal-recover: $*"; }
+
+# wait for the container
+i=0
+while ! lxc-info -n "$CONTAINER" >/dev/null 2>&1; do
+    i=$((i + 1)); [ "$i" -ge 30 ] && { log "container never appeared"; exit 0; }
+    sleep 2
+done
+
+# make sure hwservicemanager is actually up
+i=0
+while [ "$($LXC /system/bin/getprop hwservicemanager.ready 2>/dev/null)" != "true" ]; do
+    $LXC /system/bin/setprop ctl.restart hwservicemanager 2>/dev/null
+    i=$((i + 1)); [ "$i" -ge 20 ] && { log "hwservicemanager.ready never true"; break; }
+    sleep 2
+done
+log "hwservicemanager.ready=$($LXC /system/bin/getprop hwservicemanager.ready 2>/dev/null)"
+
+# let init run its own 'onrestart class_restart hal'
+sleep 3
+
+# sweep up HAL casualties
+for pass in 1 2 3 4; do
+    stuck=$($LXC /system/bin/getprop 2>/dev/null | \
+        sed -n 's/^\[init\.svc\.\([A-Za-z0-9._-]*\)\]: \[restarting\]$/\1/p')
+    [ -z "$stuck" ] && { log "pass $pass: nothing stuck"; break; }
+    log "pass $pass: restarting -> $(echo $stuck | tr '\n' ' ')"
+    for svc in $stuck; do
+        $LXC /system/bin/setprop ctl.restart "$svc" 2>/dev/null
+    done
+    sleep 4
+done
+
+log "final: hwcomposer=$($LXC /system/bin/getprop init.svc.vendor.hwcomposer-2-1 2>/dev/null) gralloc=$($LXC /system/bin/getprop init.svc.vendor.gralloc-2-0 2>/dev/null)"
+exit 0
