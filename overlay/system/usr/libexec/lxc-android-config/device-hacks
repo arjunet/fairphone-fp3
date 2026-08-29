@@ -1,9 +1,5 @@
 #!/bin/sh
 
-# ginna: mop up HALs (hwcomposer/gralloc/...) killed by the early-boot binder
-# race. Backgrounded so it never blocks container bring-up.
-[ -x /usr/libexec/halium-hal-recover ] && /usr/libexec/halium-hal-recover >/dev/null 2>&1 &
-
 # Wait for the property system to be up.
 while [ ! -e /dev/socket/property_service ]; do sleep 0.1; done
 
