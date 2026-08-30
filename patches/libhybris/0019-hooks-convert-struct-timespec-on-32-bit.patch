@@ -1,5 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Arjune Mithu <vishmithu13@gmail.com>
+Date: Sun, 30 Aug 2026 09:59:05 -0400
+Subject: hybris: hooks: convert struct timespec on 32-bit platforms with
+ _TIME_BITS=64
+
+On 32-bit architectures bionic keeps a 32-bit time_t, so its
+'struct timespec' is 8 bytes, while a host libc built with _TIME_BITS=64
+(Ubuntu 24.04 armhf) uses a 16-byte 'struct timespec'.  The pthread
+cond/mutex/rwlock timed-wait hooks passed the caller's timespec pointer
+straight through, so the host libc misread tv_sec as a huge 64-bit value
+and returned EOVERFLOW; Android 10 blobs' libc++ then throw
+'condition_variable timed_wait failed: Value too large for defined data
+type' and abort (test_hwcomposer / lomiri-system-compositor).
+
+Add a bionic<->host 'struct timespec' conversion at the boundary for
+pthread_cond_timedwait (+ its _monotonic aliases),
+pthread_cond_timedwait_relative_np, pthread_mutex_timedlock and
+pthread_rwlock_timed{rd,wr}lock, and hook clock_gettime/clock_getres so
+their results are narrowed back to the bionic layout.  Mirrors the
+existing bionic_off_t handling for the _FILE_OFFSET_BITS=64 mismatch;
+a no-op on __LP64__.
+---
+ hybris/common/hooks.c | 102 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 102 insertions(+)
+
 diff --git a/hybris/common/hooks.c b/hybris/common/hooks.c
-index 40b5cc5..45e0dc3 100644
+index 40b5cc5..6aaf132 100644
 --- a/hybris/common/hooks.c
 +++ b/hybris/common/hooks.c
 @@ -58,6 +58,52 @@
@@ -7,50 +33,50 @@ index 40b5cc5..45e0dc3 100644
  #include <sys/time.h>
  
 +/*
-+ * struct timespec ABI shim (bionic 32-bit time_t  <->  host 64-bit time_t)
++ * struct timespec ABI shim.
 + *
-+ * Bionic on 32-bit ARM has a 32-bit time_t, so its 'struct timespec' is
-+ * 8 bytes: { int32_t tv_sec; int32_t tv_nsec; }.  On Ubuntu 24.04 (noble)
-+ * armhf the host glibc is built with _TIME_BITS=64, so the host
-+ * 'struct timespec' is 16 bytes.  Handing a bionic timespec straight to a
-+ * host pthread_cond_timedwait()/clock_gettime()/... therefore misreads
-+ * tv_sec as a huge 64-bit value -> EOVERFLOW, and the Android blob's libc++
-+ * throws "condition_variable timed_wait failed: Value too large for defined
-+ * data type".  Convert explicitly at the hook boundary.
++ * Bionic on 32-bit architectures keeps a 32-bit time_t, so its
++ * 'struct timespec' is 8 bytes { int32_t tv_sec; int32_t tv_nsec; }.
++ * The host libc here is built with _TIME_BITS=64 (e.g. Ubuntu 24.04
++ * armhf), making the host 'struct timespec' 16 bytes.  Passing a bionic
++ * timespec pointer straight into a host pthread_cond_timedwait() /
++ * clock_gettime() / ... therefore misreads tv_sec as a huge 64-bit
++ * value -> EOVERFLOW, and the Android blob's libc++ throws
++ * "condition_variable timed_wait failed: Value too large for defined
++ * data type".  Convert explicitly at the hook boundary, mirroring the
++ * bionic_off_t handling used for the _FILE_OFFSET_BITS=64 mismatch.
 + */
-+#if defined(__arm__) && !defined(__aarch64__) && defined(__USE_TIME_BITS64)
-+#define HYBRIS_TIME64_SHIM 1
++#if !defined(__LP64__)
++#define HYBRIS_BIONIC_TIMESPEC_SHIM 1
 +
-+struct hybris_bionic_timespec {
++struct bionic_timespec {
 +    int32_t tv_sec;
 +    int32_t tv_nsec;
 +};
 +
-+/* bionic (8-byte) -> host (16-byte); returns a host-layout pointer */
++/* bionic (8-byte) -> host layout; returns a host-usable pointer */
 +static inline const struct timespec *
-+hybris_ts_in(struct timespec *host, const struct timespec *bionic)
++bionic_timespec_in(struct timespec *host, const struct timespec *bionic)
 +{
-+    const struct hybris_bionic_timespec *b;
++    const struct bionic_timespec *b = (const struct bionic_timespec *) bionic;
 +    if (!bionic)
 +        return NULL;
-+    b = (const struct hybris_bionic_timespec *) bionic;
 +    host->tv_sec = b->tv_sec;
 +    host->tv_nsec = b->tv_nsec;
 +    return host;
 +}
 +
-+/* host (16-byte) -> bionic (8-byte), written back in place */
++/* host layout -> bionic (8-byte), written back in place */
 +static inline void
-+hybris_ts_out(struct timespec *bionic, const struct timespec *host)
++bionic_timespec_out(struct timespec *bionic, const struct timespec *host)
 +{
-+    struct hybris_bionic_timespec *b;
++    struct bionic_timespec *b = (struct bionic_timespec *) bionic;
 +    if (!bionic)
 +        return;
-+    b = (struct hybris_bionic_timespec *) bionic;
 +    b->tv_sec = (int32_t) host->tv_sec;
 +    b->tv_nsec = (int32_t) host->tv_nsec;
 +}
-+#endif /* __arm__ && __USE_TIME_BITS64 */
++#endif /* !__LP64__ */
 +
  #include <netdb.h>
  #include <unistd.h>
@@ -59,9 +85,9 @@ index 40b5cc5..45e0dc3 100644
          *((uintptr_t *)__mutex) = (uintptr_t) realmutex;
      }
  
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec _hybris_abs;
-+    __abs_timeout = hybris_ts_in(&_hybris_abs, __abs_timeout);
++    __abs_timeout = bionic_timespec_in(&_hybris_abs, __abs_timeout);
 +#endif
      return pthread_mutex_timedlock(realmutex, __abs_timeout);
  }
@@ -70,9 +96,9 @@ index 40b5cc5..45e0dc3 100644
          *((uintptr_t *) mutex) = (uintptr_t) realmutex;
      }
  
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec _hybris_abstime;
-+    abstime = hybris_ts_in(&_hybris_abstime, abstime);
++    abstime = bionic_timespec_in(&_hybris_abstime, abstime);
 +#endif
      return pthread_cond_timedwait(realcond, realmutex, abstime);
  }
@@ -81,9 +107,9 @@ index 40b5cc5..45e0dc3 100644
          *((uintptr_t *) mutex) = (uintptr_t) realmutex;
      }
  
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec _hybris_rel;
-+    reltime = hybris_ts_in(&_hybris_rel, reltime);
++    reltime = bionic_timespec_in(&_hybris_rel, reltime);
 +#endif
      struct timespec tv;
      clock_gettime(CLOCK_REALTIME, &tv);
@@ -101,10 +127,10 @@ index 40b5cc5..45e0dc3 100644
 +{
 +    TRACE_HOOK("clk_id %d tp %p", clk_id, tp);
 +
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec host;
 +    int ret = clock_gettime(clk_id, &host);
-+    hybris_ts_out(tp, &host);
++    bionic_timespec_out(tp, &host);
 +    return ret;
 +#else
 +    return clock_gettime(clk_id, tp);
@@ -115,10 +141,10 @@ index 40b5cc5..45e0dc3 100644
 +{
 +    TRACE_HOOK("clk_id %d res %p", clk_id, res);
 +
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec host;
 +    int ret = clock_getres(clk_id, &host);
-+    hybris_ts_out(res, &host);
++    bionic_timespec_out(res, &host);
 +    return ret;
 +#else
 +    return clock_getres(clk_id, res);
@@ -132,9 +158,9 @@ index 40b5cc5..45e0dc3 100644
  
      pthread_rwlock_t *realrwlock = hybris_set_realrwlock(__rwlock);
  
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec _hybris_abs;
-+    abs_timeout = hybris_ts_in(&_hybris_abs, abs_timeout);
++    abs_timeout = bionic_timespec_in(&_hybris_abs, abs_timeout);
 +#endif
      return pthread_rwlock_timedrdlock(realrwlock, abs_timeout);
  }
@@ -143,9 +169,9 @@ index 40b5cc5..45e0dc3 100644
  
      pthread_rwlock_t *realrwlock = hybris_set_realrwlock(__rwlock);
  
-+#ifdef HYBRIS_TIME64_SHIM
++#ifdef HYBRIS_BIONIC_TIMESPEC_SHIM
 +    struct timespec _hybris_abs;
-+    abs_timeout = hybris_ts_in(&_hybris_abs, abs_timeout);
++    abs_timeout = bionic_timespec_in(&_hybris_abs, abs_timeout);
 +#endif
      return pthread_rwlock_timedwrlock(realrwlock, abs_timeout);
  }
@@ -154,9 +180,12 @@ index 40b5cc5..45e0dc3 100644
      HOOK_TO(pthread_cond_timedwait_monotonic, _hybris_hook_pthread_cond_timedwait),
      HOOK_TO(pthread_cond_timedwait_monotonic_np, _hybris_hook_pthread_cond_timedwait),
      HOOK_INDIRECT(pthread_cond_timedwait_relative_np),
-+    /* time.h - narrow 64-bit-time_t results back to the bionic 8-byte layout */
++    /* time.h - narrow host 64-bit-time_t results to the bionic 8-byte layout */
 +    HOOK_INDIRECT(clock_gettime),
 +    HOOK_INDIRECT(clock_getres),
      HOOK_DIRECT_NO_DEBUG(pthread_key_delete),
      HOOK_DIRECT_NO_DEBUG(pthread_getname_np),
      HOOK_INDIRECT(pthread_setname_np),
+-- 
+2.34.1
+
