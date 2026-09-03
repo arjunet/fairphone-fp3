@@ -7,22 +7,6 @@ while [ ! -e /dev/socket/property_service ]; do sleep 0.1; done
 while [ ! -e /dev/wcnss_wlan ]; do sleep 0.2; done
 echo 1 > /dev/wcnss_wlan
 
-# ginna: nothing drives the panel backlight at boot, so the compositor comes up
-# fully but the screen stays dark. Kick it to a visible level and make the node
-# group-writable so repowerd can manage brightness (dim/off) afterwards.
-for _bl in /sys/class/leds/lcd-backlight /sys/class/backlight/panel0-backlight \
-           /sys/class/backlight/*; do
-  [ -e "$_bl/brightness" ] || continue
-  chgrp system "$_bl/brightness" 2>/dev/null
-  chmod 0664 "$_bl/brightness" 2>/dev/null
-  if [ -r "$_bl/max_brightness" ]; then
-    cat "$_bl/max_brightness" > "$_bl/brightness" 2>/dev/null
-  else
-    echo 255 > "$_bl/brightness" 2>/dev/null
-  fi
-  break
-done
-
 # Enable fix audio mic service, if disabled, which should
 # only happen on first boot or maybe after an OTA-update
 if ! systemctl --global -q is-enabled check-audio-mic.service; then

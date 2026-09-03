@@ -1,25 +1,3 @@
-## ginna: the Android container's init starts the binder context managers before
-## their /dev nodes are usable (container ueventd processes them ~1s later), so
-## the BINDER_SET_CONTEXT_MGR ioctl fails.  hwservicemanager is `critical` and
-## crash-loops until init gives up; vndservicemanager is NOT critical, so it just
-## sits there "running" without ever owning /dev/vndbinder -> every handle-0
-## transaction on vndbinder returns BR_DEAD_REPLY (kernel binder.c:3115) -> the
-## graphics composer (ProcessState::initWithDriver("/dev/vndbinder")) can't keep
-## display.qservice alive -> SDM HWCSession::Init() loops forever -> no UI.
-##
-## Fix: mark both `disabled` + `override` and start them from `on post-fs`, only
-## after their binder nodes exist.  servicemanager (/dev/binder) comes up fine on
-## its own and is left untouched.
-
-service vndservicemanager /vendor/bin/vndservicemanager /dev/vndbinder
-    class core
-    user system
-    group system readproc
-    writepid /dev/cpuset/system-background/tasks
-    shutdown critical
-    disabled
-    override
-
 service hwservicemanager /system/bin/hwservicemanager
     class core
     user system
@@ -30,8 +8,6 @@ service hwservicemanager /system/bin/hwservicemanager
     override
 
 on post-fs
-    wait /dev/vndbinder 20
-    wait /dev/binder 20
     wait /dev/hwbinder 20
-    start vndservicemanager
+    wait /dev/binder 20
     start hwservicemanager
