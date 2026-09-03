@@ -2,51 +2,75 @@
 # halium-hal-recover  (runs on the HOST, backgrounded from lxc-android-config's
 # device-hacks)
 #
-# Early-boot binder race on ginna: hwservicemanager and a batch of vendor HALs
-# (notably vendor.gralloc-2-0 / vendor.hwcomposer-2-1) can be started by the
-# container's init before /dev/hwbinder is a usable binder node. They fail with
-# EBADF ("Failed to setup binder polling: -9" / "Binder driver could not be
-# opened"), crash ~4x, and init - treating them as critical - gives up.
+# ginna early-boot binder race on /dev/vndbinder: vndservicemanager starts before
+# that binder context is usable, fails BINDER_SET_CONTEXT_MGR, and never becomes
+# the context manager for /dev/vndbinder (it stays "running" but does not own the
+# node). Every handle-0 transaction on vndbinder then returns BR_DEAD_REPLY
+# (kernel drivers/android/binder.c:3115). The graphics composer
+# (android.hardware.graphics.composer@2.1-service -> ProcessState::initWithDriver
+# ("/dev/vndbinder")) cannot keep display.qservice alive, so SDM
+# HWCSession::Init() loops forever and IComposer/default never registers ->
+# lomiri-system-compositor has no HWC -> black screen.
 #
-# zz-halium-hwsm-fix.rc handles hwservicemanager itself; this mops up the rest:
-# once the container and binder are settled, restart every service still stuck
-# in "restarting". Always exits 0.
+# init's own rapid auto-retries of vndservicemanager just hit -EBUSY (the dead
+# instance's binder_proc is not released yet) and never converge. A stop, a real
+# gap, then a clean start works - verified by hand. Do exactly that, once, after
+# boot has settled, then restart the composer and the compositor.
+#
+# Always exits 0. Safe to run when nothing is wrong (it checks first).
 
 CONTAINER=android
 LXC="lxc-attach -n $CONTAINER --"
 
 log() { echo "halium-hal-recover: $*"; }
 
-# wait for the container
+composer_up() {
+    # IComposer/default actually registered on hwbinder?
+    timeout 20 $LXC /system/bin/lshal 2>/dev/null | grep -q 'IComposer/default'
+}
+
+# 1. wait for the container
 i=0
 while ! lxc-info -n "$CONTAINER" >/dev/null 2>&1; do
-    i=$((i + 1)); [ "$i" -ge 30 ] && { log "container never appeared"; exit 0; }
-    sleep 2
+    i=$((i + 1)); [ "$i" -ge 60 ] && { log "container never appeared"; exit 0; }
+    sleep 1
 done
 
-# make sure hwservicemanager is actually up
+# 2. wait until hwbinder is up (hwservicemanager made it) - proxy for "binder settled"
 i=0
 while [ "$($LXC /system/bin/getprop hwservicemanager.ready 2>/dev/null)" != "true" ]; do
-    $LXC /system/bin/setprop ctl.restart hwservicemanager 2>/dev/null
-    i=$((i + 1)); [ "$i" -ge 20 ] && { log "hwservicemanager.ready never true"; break; }
-    sleep 2
+    i=$((i + 1)); [ "$i" -ge 60 ] && { log "hwservicemanager.ready never true; continuing anyway"; break; }
+    sleep 1
 done
-log "hwservicemanager.ready=$($LXC /system/bin/getprop hwservicemanager.ready 2>/dev/null)"
+sleep 3   # let init run its own class_start hal first
 
-# let init run its own 'onrestart class_restart hal'
-sleep 3
+if composer_up; then
+    log "IComposer/default already registered - nothing to do"
+    exit 0
+fi
 
-# sweep up HAL casualties
-for pass in 1 2 3 4; do
-    stuck=$($LXC /system/bin/getprop 2>/dev/null | \
-        sed -n 's/^\[init\.svc\.\([A-Za-z0-9._-]*\)\]: \[restarting\]$/\1/p')
-    [ -z "$stuck" ] && { log "pass $pass: nothing stuck"; break; }
-    log "pass $pass: restarting -> $(echo $stuck | tr '\n' ' ')"
-    for svc in $stuck; do
-        $LXC /system/bin/setprop ctl.restart "$svc" 2>/dev/null
-    done
-    sleep 4
+setp() { $LXC /system/bin/setprop "$1" "$2" 2>/dev/null; }
+
+for attempt in 1 2 3 4; do
+    log "attempt $attempt: cycling vndservicemanager + vendor.hwcomposer-2-1"
+    setp ctl.stop  vendor.hwcomposer-2-1
+    setp ctl.stop  vndservicemanager
+    sleep 4                                   # let the old binder_proc be released
+    setp ctl.start vndservicemanager
+    sleep 3
+    setp ctl.start vendor.hwcomposer-2-1
+    sleep 6
+    if composer_up; then
+        log "attempt $attempt: IComposer/default registered"
+        break
+    fi
 done
 
-log "final: hwcomposer=$($LXC /system/bin/getprop init.svc.vendor.hwcomposer-2-1 2>/dev/null) gralloc=$($LXC /system/bin/getprop init.svc.vendor.gralloc-2-0 2>/dev/null)"
+if composer_up; then
+    log "restarting lightdm so the compositor picks up the HWC"
+    systemctl restart lightdm
+else
+    log "composer still not up after 4 attempts - leaving lightdm alone"
+fi
+
 exit 0

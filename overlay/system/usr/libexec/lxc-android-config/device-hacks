@@ -23,6 +23,11 @@ for _bl in /sys/class/leds/lcd-backlight /sys/class/backlight/panel0-backlight \
   break
 done
 
+# ginna: recover the graphics composer from the early-boot /dev/vndbinder binder
+# race (vndservicemanager never becomes that context's manager -> IComposer never
+# registers -> black screen). Backgrounded so it never blocks container bring-up.
+[ -x /usr/libexec/halium-hal-recover ] && /usr/libexec/halium-hal-recover >/var/log/halium-hal-recover.log 2>&1 &
+
 # Enable fix audio mic service, if disabled, which should
 # only happen on first boot or maybe after an OTA-update
 if ! systemctl --global -q is-enabled check-audio-mic.service; then

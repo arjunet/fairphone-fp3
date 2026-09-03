@@ -1,24 +1,25 @@
-## ginna: the Android container's init starts the binder context managers before
-## their /dev nodes are usable (container ueventd processes them ~1s later), so
-## the BINDER_SET_CONTEXT_MGR ioctl fails.  hwservicemanager is `critical` and
-## crash-loops until init gives up; vndservicemanager is NOT critical, so it just
-## sits there "running" without ever owning /dev/vndbinder -> every handle-0
-## transaction on vndbinder returns BR_DEAD_REPLY (kernel binder.c:3115) -> the
-## graphics composer (ProcessState::initWithDriver("/dev/vndbinder")) can't keep
-## display.qservice alive -> SDM HWCSession::Init() loops forever -> no UI.
+## ginna: the container's init starts hwservicemanager before /dev/hwbinder is a
+## usable binder node; it fails BINDER_SET_CONTEXT_MGR, and being `critical` it
+## crash-loops until init gives up -> no hwbinder services -> no UI.
 ##
-## Fix: mark both `disabled` + `override` and start them from `on post-fs`, only
-## after their binder nodes exist.  servicemanager (/dev/binder) comes up fine on
-## its own and is left untouched.
-
-service vndservicemanager /vendor/bin/vndservicemanager /dev/vndbinder
-    class core
-    user system
-    group system readproc
-    writepid /dev/cpuset/system-background/tasks
-    shutdown critical
-    disabled
-    override
+## Fix: mark it `disabled` + `override` and start it from `on post-fs`, after the
+## binder nodes exist.
+##
+## /dev/vndbinder has the same race, but vndservicemanager is not `critical` so
+## it can't be fixed the same way here: an early start that fails BINDER_SET_
+## CONTEXT_MGR just sits there "running" without owning the node, and forcing it
+## `disabled`+`override` and re-starting from post-fs makes init's rapid retries
+## hit -EBUSY on the dead instance's binder_proc, so it never converges. Every
+## handle-0 transaction on vndbinder then returns BR_DEAD_REPLY (kernel
+## binder.c:3115), the graphics composer (ProcessState::initWithDriver(
+## "/dev/vndbinder")) can't keep display.qservice alive, SDM HWCSession::Init()
+## loops forever, IComposer/default never registers -> black screen.
+##
+## vndservicemanager is therefore left STOCK here (it ends up "running" but not
+## owning /dev/vndbinder - a stable state) and recovered post-boot by
+## /usr/libexec/halium-hal-recover: stop it, wait a real gap so the old
+## binder_proc is released, start it clean, then restart the graphics composer.
+## servicemanager (/dev/binder) comes up fine on its own.
 
 service hwservicemanager /system/bin/hwservicemanager
     class core
@@ -30,8 +31,6 @@ service hwservicemanager /system/bin/hwservicemanager
     override
 
 on post-fs
-    wait /dev/vndbinder 20
-    wait /dev/binder 20
     wait /dev/hwbinder 20
-    start vndservicemanager
+    wait /dev/binder 20
     start hwservicemanager
