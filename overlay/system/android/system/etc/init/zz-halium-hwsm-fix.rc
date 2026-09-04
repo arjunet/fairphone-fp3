@@ -19,7 +19,7 @@
 ## owning /dev/vndbinder - a stable state) and recovered post-boot by
 ## /usr/libexec/halium-hal-recover: stop it, wait a real gap so the old
 ## binder_proc is released, start it clean, then restart the graphics composer.
-## servicemanager (/dev/binder) comes up fine on its own.
+## servicemanager (/dev/binder) comes up fine.
 
 service hwservicemanager /system/bin/hwservicemanager
     class core
