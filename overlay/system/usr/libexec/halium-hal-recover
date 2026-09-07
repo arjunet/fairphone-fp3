@@ -137,4 +137,22 @@ else
     log "composer still not up - leaving lightdm alone"
 fi
 
+# 7. bluetooth: bluebinder starts before vendor.bluetooth-1-0-qti registers
+#    IBluetoothHci/default on hwbinder, fails "Failed to connect to bluetooth
+#    binder service", and systemd restart-loops it -> no hci0. Restart the HAL
+#    (re-registers the interface) then bluebinder. Kernel side needs
+#    CONFIG_BT_HCIVHCI (halium.config) so /dev/vhci exists.
+if [ -e /dev/vhci ] && [ ! -e /sys/class/bluetooth/hci0 ]; then
+    log "no hci0 - restarting vendor.bluetooth-1-0-qti + bluebinder"
+    setp ctl.restart vendor.bluetooth-1-0-qti
+    sleep 4
+    systemctl restart bluebinder
+    sleep 3
+    if [ -e /sys/class/bluetooth/hci0 ]; then
+        log "hci0 is up"
+    else
+        log "hci0 still missing after bluetooth recovery"
+    fi
+fi
+
 exit 0
