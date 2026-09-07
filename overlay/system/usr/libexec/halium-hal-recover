@@ -44,12 +44,36 @@ while [ "$($LXC /system/bin/getprop hwservicemanager.ready 2>/dev/null)" != "tru
 done
 sleep 3   # let init run its own class_start hal first
 
-if composer_up; then
-    log "IComposer/default already registered - nothing to do"
-    exit 0
+setp() { $LXC /system/bin/setprop "$1" "$2" 2>/dev/null; }
+
+# ginna: the container's init intermittently never starts
+# android.hardware.configstore@1.1-service (absent from init.svc entirely,
+# despite init.target.rc's "start vendor.configstore-hal"). When it's missing,
+# lomiri-system-compositor's hwcomposer/EGL init blocks forever in
+# getService("configstore@1.0::ISurfaceFlingerConfigs/default") and lightdm
+# just restart-loops the compositor - the UI never appears (stuck on the
+# bootloader splash) even though IComposer/default IS registered. Force it.
+relightdm=0
+if [ "$($LXC /system/bin/getprop init.svc.vendor.configstore-hal 2>/dev/null)" != "running" ]; then
+    log "configstore not running - starting vendor.configstore-hal"
+    $LXC /system/bin/start vendor.configstore-hal 2>/dev/null
+    i=0
+    while [ "$($LXC /system/bin/getprop init.svc.vendor.configstore-hal 2>/dev/null)" != "running" ]; do
+        i=$((i + 1)); [ "$i" -ge 40 ] && { log "configstore never came up"; break; }
+        sleep 0.5
+    done
+    relightdm=1
 fi
 
-setp() { $LXC /system/bin/setprop "$1" "$2" 2>/dev/null; }
+if composer_up; then
+    if [ "$relightdm" = 1 ]; then
+        log "IComposer up but configstore was started late - restarting lightdm"
+        systemctl restart lightdm
+    else
+        log "IComposer/default already registered - nothing to do"
+    fi
+    exit 0
+fi
 
 for attempt in 1 2 3 4; do
     log "attempt $attempt: cycling vndservicemanager + vendor.hwcomposer-2-1"
