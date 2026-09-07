@@ -1,0 +1,30 @@
+#!/bin/sh
+# ginna: click desktop hooks don't survive a reboot on this device. The
+# packages stay registered under /opt/click.ubuntu.com/.click/users/phablet/,
+# but their .desktop files get stripped from ~phablet/.local/share/applications/
+# on every boot (the ubuntu-sdk-20.04 framework those clicks target isn't
+# present on 24.04), and `click hook run-user` treats its own state as already
+# applied so it regenerates nothing - the app drawer ends up with only the one
+# ut24.04-framework app.
+#
+# A plain `click register` re-fires the desktop hook regardless of framework.
+# Do that for every installed click, on every boot.
+set -u
+
+U=phablet
+id "$U" >/dev/null 2>&1 || exit 0
+
+n=0
+for cur in /opt/click.ubuntu.com/*/current; do
+    [ -e "$cur" ] || continue
+    pkg=$(basename "$(dirname "$cur")")
+    ver=$(basename "$(readlink -f "$cur")")
+    if click register --user="$U" "$pkg" "$ver" >/dev/null 2>&1; then
+        echo "ginna-click-resync: $pkg $ver"
+        n=$((n + 1))
+    else
+        echo "ginna-click-resync: FAILED $pkg $ver"
+    fi
+done
+echo "ginna-click-resync: re-registered $n click(s) for $U"
+exit 0

@@ -1,0 +1,12 @@
+[Unit]
+Description=Re-register click apps for phablet (desktop hooks don't survive reboot on ginna)
+After=lightdm.service lxc-android-config.service
+Wants=lightdm.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 20
+ExecStart=/usr/libexec/ginna-click-resync
+
+[Install]
+WantedBy=multi-user.target
