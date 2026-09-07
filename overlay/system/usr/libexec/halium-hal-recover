@@ -2,32 +2,53 @@
 # halium-hal-recover  (runs on the HOST, backgrounded from lxc-android-config's
 # device-hacks)
 #
-# ginna early-boot binder race on /dev/vndbinder: vndservicemanager starts before
-# that binder context is usable, fails BINDER_SET_CONTEXT_MGR, and never becomes
-# the context manager for /dev/vndbinder (it stays "running" but does not own the
-# node). Every handle-0 transaction on vndbinder then returns BR_DEAD_REPLY
-# (kernel drivers/android/binder.c:3115). The graphics composer
-# (android.hardware.graphics.composer@2.1-service -> ProcessState::initWithDriver
-# ("/dev/vndbinder")) cannot keep display.qservice alive, so SDM
-# HWCSession::Init() loops forever and IComposer/default never registers ->
-# lomiri-system-compositor has no HWC -> black screen.
+# ginna has an intermittent early-boot binder-context race. Two flavours seen:
 #
-# init's own rapid auto-retries of vndservicemanager just hit -EBUSY (the dead
-# instance's binder_proc is not released yet) and never converge. A stop, a real
-# gap, then a clean start works - verified by hand. Do exactly that, once, after
-# boot has settled, then restart the composer and the compositor.
+#  1. /dev/vndbinder: vndservicemanager starts before that binder context is
+#     usable, fails BINDER_SET_CONTEXT_MGR, and never becomes the context
+#     manager (stays "running" but does not own the node). handle-0 transactions
+#     then return BR_DEAD_REPLY, the graphics composer can't keep
+#     display.qservice alive, IComposer/default never registers -> black screen.
+#
+#  2. /dev/hwbinder: hwservicemanager itself loses the same race and crash-loops.
+#     While it is down, every HIDL service's registerAsService() SIGABRTs, so the
+#     whole HAL layer (composer, gralloc, configstore, sensors, ...) melts down
+#     into "restarting". hwservicemanager.ready stays "true" (stale). UI never
+#     comes up - stuck on the bootloader splash, though SSH works.
+#
+# init's own rapid auto-retries just hit -EBUSY on the not-yet-released
+# binder_proc and never converge. A stop, a real gap, then a clean start works -
+# verified by hand. Do that: bounce hwservicemanager first if it melted down,
+# reset everything still crash-looping, then fix the composer/vndbinder path,
+# then restart lightdm once.
 #
 # Always exits 0. Safe to run when nothing is wrong (it checks first).
 
 CONTAINER=android
 LXC="lxc-attach -n $CONTAINER --"
 
-log() { echo "halium-hal-recover: $*"; }
+log()  { echo "halium-hal-recover: $*"; }
+setp() { $LXC /system/bin/setprop "$1" "$2" 2>/dev/null; }
+gp()   { $LXC /system/bin/getprop "$1" 2>/dev/null; }
 
 composer_up() {
     # IComposer/default actually registered on hwbinder?
     timeout 20 $LXC /system/bin/lshal 2>/dev/null | grep -q 'IComposer/default'
 }
+
+restarting_list() {
+    $LXC /system/bin/getprop 2>/dev/null \
+        | grep '\]: \[restarting\]' \
+        | sed -E 's/.*init\.svc\.([^]]+)\].*/\1/'
+}
+restarting_count() { restarting_list | grep -c . ; }
+
+hwsm_ok() {
+    [ "$(gp init.svc.hwservicemanager)" = "running" ] \
+        && timeout 10 $LXC /system/bin/lshal >/dev/null 2>&1
+}
+
+relightdm=0
 
 # 1. wait for the container
 i=0
@@ -36,65 +57,84 @@ while ! lxc-info -n "$CONTAINER" >/dev/null 2>&1; do
     sleep 1
 done
 
-# 2. wait until hwbinder is up (hwservicemanager made it) - proxy for "binder settled"
+# 2. wait until hwservicemanager.ready has been set once (proxy for "init got far
+#    enough"); don't trust it beyond that - it never gets cleared.
 i=0
-while [ "$($LXC /system/bin/getprop hwservicemanager.ready 2>/dev/null)" != "true" ]; do
+while [ "$(gp hwservicemanager.ready)" != "true" ]; do
     i=$((i + 1)); [ "$i" -ge 60 ] && { log "hwservicemanager.ready never true; continuing anyway"; break; }
     sleep 1
 done
 sleep 3   # let init run its own class_start hal first
 
-setp() { $LXC /system/bin/setprop "$1" "$2" 2>/dev/null; }
+# 3. hwservicemanager meltdown recovery
+if ! hwsm_ok || [ "$(restarting_count)" -ge 5 ]; then
+    log "hwservicemanager unhealthy (state=$(gp init.svc.hwservicemanager) restarting=$(restarting_count)) - bouncing"
+    setp ctl.stop hwservicemanager
+    sleep 5                                    # let the dead binder_proc release
+    setp ctl.start hwservicemanager
+    i=0
+    while [ "$(gp init.svc.hwservicemanager)" != "running" ]; do
+        i=$((i + 1)); [ "$i" -ge 30 ] && { log "hwservicemanager still not running"; break; }
+        sleep 1
+    done
+    sleep 3
 
-# ginna: the container's init intermittently never starts
-# android.hardware.configstore@1.1-service (absent from init.svc entirely,
-# despite init.target.rc's "start vendor.configstore-hal"). When it's missing,
-# lomiri-system-compositor's hwcomposer/EGL init blocks forever in
-# getService("configstore@1.0::ISurfaceFlingerConfigs/default") and lightdm
-# just restart-loops the compositor - the UI never appears (stuck on the
-# bootloader splash) even though IComposer/default IS registered. Force it.
-relightdm=0
-if [ "$($LXC /system/bin/getprop init.svc.vendor.configstore-hal 2>/dev/null)" != "running" ]; then
+    # reset every service still stuck in crash-backoff now that hwsm is healthy
+    for round in 1 2 3; do
+        svcs=$(restarting_list)
+        [ -z "$svcs" ] && break
+        log "reset round $round: $(echo "$svcs" | grep -c .) services still restarting"
+        for s in $svcs; do setp ctl.stop  "$s"; done
+        sleep 3
+        for s in $svcs; do setp ctl.start "$s"; done
+        sleep 8
+    done
+    log "after reset: restarting=$(restarting_count)"
+    relightdm=1
+fi
+
+# 4. configstore specifically (also covers the case where only it is missing,
+#    without a full meltdown)
+if [ "$(gp init.svc.vendor.configstore-hal)" != "running" ]; then
     log "configstore not running - starting vendor.configstore-hal"
     $LXC /system/bin/start vendor.configstore-hal 2>/dev/null
     i=0
-    while [ "$($LXC /system/bin/getprop init.svc.vendor.configstore-hal 2>/dev/null)" != "running" ]; do
+    while [ "$(gp init.svc.vendor.configstore-hal)" != "running" ]; do
         i=$((i + 1)); [ "$i" -ge 40 ] && { log "configstore never came up"; break; }
         sleep 0.5
     done
     relightdm=1
 fi
 
-if composer_up; then
-    if [ "$relightdm" = 1 ]; then
-        log "IComposer up but configstore was started late - restarting lightdm"
-        systemctl restart lightdm
-    else
-        log "IComposer/default already registered - nothing to do"
-    fi
-    exit 0
+# 5. composer / vndbinder path
+if ! composer_up; then
+    for attempt in 1 2 3 4; do
+        log "attempt $attempt: cycling vndservicemanager + vendor.hwcomposer-2-1"
+        setp ctl.stop  vendor.hwcomposer-2-1
+        setp ctl.stop  vndservicemanager
+        sleep 4                                # let the old binder_proc be released
+        setp ctl.start vndservicemanager
+        sleep 3
+        setp ctl.start vendor.hwcomposer-2-1
+        sleep 6
+        if composer_up; then
+            log "attempt $attempt: IComposer/default registered"
+            break
+        fi
+    done
+    relightdm=1
 fi
 
-for attempt in 1 2 3 4; do
-    log "attempt $attempt: cycling vndservicemanager + vendor.hwcomposer-2-1"
-    setp ctl.stop  vendor.hwcomposer-2-1
-    setp ctl.stop  vndservicemanager
-    sleep 4                                   # let the old binder_proc be released
-    setp ctl.start vndservicemanager
-    sleep 3
-    setp ctl.start vendor.hwcomposer-2-1
-    sleep 6
-    if composer_up; then
-        log "attempt $attempt: IComposer/default registered"
-        break
-    fi
-done
-
+# 6. hand the display back to lomiri
 if composer_up; then
-    log "restarting lightdm so the compositor picks up the HWC"
-    systemctl restart lightdm
+    if [ "$relightdm" = 1 ]; then
+        log "recovered - restarting lightdm so the compositor picks up the HALs"
+        systemctl restart lightdm
+    else
+        log "everything already healthy - nothing to do"
+    fi
 else
-    log "composer still not up after 4 attempts - leaving lightdm alone"
+    log "composer still not up - leaving lightdm alone"
 fi
 
 exit 0
