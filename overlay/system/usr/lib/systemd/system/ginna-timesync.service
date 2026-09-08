@@ -1,0 +1,16 @@
+[Unit]
+Description=Network time sync (works around systemd-timesyncd bug #38222 on armhf)
+Documentation=https://github.com/systemd/systemd/pull/38251
+After=network-online.target
+Wants=network-online.target
+Conflicts=systemd-timesyncd.service
+Before=time-sync.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/ginna-timesync
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=time-sync.target

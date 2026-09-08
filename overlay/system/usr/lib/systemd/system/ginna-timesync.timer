@@ -1,0 +1,10 @@
+[Unit]
+Description=Re-run network time sync periodically (no RTC on this device)
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=1h
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

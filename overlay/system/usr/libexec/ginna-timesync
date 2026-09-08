@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""ginna: set the system clock from the network.
+
+systemd-timesyncd is broken on 32-bit armhf. The kernel attaches two
+receive-timestamp control messages to every NTP reply (old 32-bit
+SO_TIMESTAMPNS + new 64-bit one); timesyncd only reserves buffer space for
+one, so every reply hits recvmsg() MSG_CTRUNC -> "Error receiving message,
+disconnecting: Exchange full" and is discarded. The clock never syncs.
+See systemd issue #38222 / PR #38251 (fixed in v258, not in Ubuntu 24.04's
+255.4). This device also has no battery-backed RTC, so it boots at the
+build-date floor and stays there.
+
+The truncation only affects timesyncd's control-message handling, not SNTP
+itself, so do a plain SNTP query here and step the clock with `date`. If
+UDP/123 is unreachable, fall back to the Date header of an HTTPS response.
+Always exits 0 so it can never wedge boot.
+"""
+import socket
+import struct
+import subprocess
+import sys
+import time
+from email.utils import parsedate_to_datetime
+
+NTP_SERVERS = ["time.cloudflare.com", "time.google.com", "pool.ntp.org",
+               "time.windows.com", "ntp.ubuntu.com"]
+HTTPS_URLS = ["https://www.cloudflare.com/", "https://www.google.com/"]
+NTP_UNIX_OFFSET = 2208988800          # seconds from 1900-01-01 to 1970-01-01
+SANE_MIN = 1_750_000_000             # ~2025-06
+SANE_MAX = 2_140_000_000             # ~2037-10
+TIMESYNC_STAMP = "/var/lib/systemd/timesync/clock"
+
+
+def log(*a):
+    print("ginna-timesync:", *a, file=sys.stderr, flush=True)
+
+
+def sntp_query(host, timeout=4):
+    pkt = b"\x1b" + 47 * b"\0"        # LI 0, VN 3, Mode 3 (client)
+    try:
+        addrs = socket.getaddrinfo(host, 123, type=socket.SOCK_DGRAM)
+    except OSError as e:
+        log(f"{host}: resolve failed: {e}")
+        return None
+    for fam, _stype, _proto, _cn, sa in addrs:
+        s = socket.socket(fam, socket.SOCK_DGRAM)
+        s.settimeout(timeout)
+        try:
+            t0 = time.time()
+            s.sendto(pkt, sa)
+            data, _ = s.recvfrom(48)
+            t3 = time.time()
+        except OSError as e:
+            log(f"{host} ({sa[0]}): {e}")
+            continue
+        finally:
+            s.close()
+        if len(data) < 48:
+            continue
+        mode = data[0] & 0x07
+        stratum = data[1]
+        xmit = struct.unpack("!Q", data[40:48])[0] / 2.0 ** 32 - NTP_UNIX_OFFSET
+        if mode != 4 or stratum == 0 or stratum > 15:
+            log(f"{host}: rejecting reply mode={mode} stratum={stratum}")
+            continue
+        srv_now = xmit + (t3 - t0) / 2.0
+        if not (SANE_MIN < srv_now < SANE_MAX):
+            log(f"{host}: implausible time {srv_now:.0f}")
+            continue
+        return srv_now
+    return None
+
+
+def https_query(url, timeout=8):
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, method="HEAD",
+                                     headers={"User-Agent": "ginna-timesync"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            date_hdr = r.headers.get("Date")
+    except Exception as e:
+        log(f"{url}: {e}")
+        return None
+    if not date_hdr:
+        return None
+    try:
+        ts = parsedate_to_datetime(date_hdr).timestamp()
+    except Exception as e:
+        log(f"{url}: unparseable Date {date_hdr!r}: {e}")
+        return None
+    return ts if SANE_MIN < ts < SANE_MAX else None
+
+
+def apply(epoch):
+    # `date` (coreutils) handles the armhf 64-bit time_t layout correctly;
+    # doing clock_settime() by hand from Python risks the same 32/64 struct
+    # trap that bites everything else on this port.
+    try:
+        subprocess.run(["date", "-u", "-s", f"@{epoch:.3f}"],
+                       check=True, stdout=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError) as e:
+        log(f"date -s failed: {e}")
+        return False
+    # refresh timesyncd's recorded-timestamp floor so a future pre-network
+    # boot starts from here instead of the image build date
+    try:
+        import os
+        os.utime(TIMESYNC_STAMP, (epoch, epoch))
+    except OSError:
+        pass
+    return True
+
+
+def main():
+    for attempt in (1, 2, 3):
+        for host in NTP_SERVERS:
+            srv = sntp_query(host)
+            if srv is None:
+                continue
+            skew = srv - time.time()
+            if apply(srv):
+                log(f"set from {host} (skew was {skew:+.1f}s) -> "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(srv))}")
+                return 0
+            log(f"got time from {host} but could not set the clock")
+            return 0
+        log(f"SNTP pass {attempt}: no server answered; retrying")
+        time.sleep(5)
+
+    log("all SNTP servers failed - trying HTTPS Date header")
+    for url in HTTPS_URLS:
+        ts = https_query(url)
+        if ts is not None:
+            skew = ts - time.time()
+            if apply(ts):
+                log(f"set from {url} Date header (skew was {skew:+.1f}s)")
+                return 0
+
+    log("could not reach any time source")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
