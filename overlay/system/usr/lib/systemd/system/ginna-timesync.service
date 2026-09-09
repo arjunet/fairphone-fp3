@@ -1,15 +1,18 @@
 [Unit]
 Description=Network time sync (works around systemd-timesyncd bug #38222 on armhf)
 Documentation=https://github.com/systemd/systemd/pull/38251
-After=network-online.target
 Wants=network-online.target
 Conflicts=systemd-timesyncd.service
 Before=time-sync.target
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/libexec/ginna-timesync
+# no RemainAfterExit: the .timer needs to actually re-run ExecStart each cycle
+# Poll until the first successful sync of this boot instead of waiting on
+# network-online.target - the clock is then right the moment WiFi connects in
+# the OOBE wizard. Re-runs (from the .timer) do a single quick pass.
+ExecStart=/usr/libexec/ginna-timesync --persist-until-synced
+TimeoutStartSec=3000
 
 [Install]
 WantedBy=multi-user.target

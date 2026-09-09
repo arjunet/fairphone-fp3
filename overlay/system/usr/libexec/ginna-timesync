@@ -14,6 +14,12 @@ The truncation only affects timesyncd's control-message handling, not SNTP
 itself, so do a plain SNTP query here and step the clock with `date`. If
 UDP/123 is unreachable, fall back to the Date header of an HTTPS response.
 Always exits 0 so it can never wedge boot.
+
+With --persist-until-synced (how device-hacks starts it at boot) it polls
+every few seconds until the first successful sync of this boot, so the clock
+is correct the instant WiFi connects in the OOBE wizard - no dependency on
+network-online.target. Without the flag (the .timer's periodic re-run) it
+does a single quick pass for drift correction.
 """
 import fcntl
 import os
@@ -138,33 +144,67 @@ def apply(epoch):
     return True
 
 
-def main():
-    for attempt in (1, 2, 3):
-        for host in NTP_SERVERS:
-            srv = sntp_query(host)
-            if srv is None:
-                continue
-            skew = srv - time.time()
-            if apply(srv):
-                log(f"set from {host} (skew was {skew:+.1f}s) -> "
-                    f"{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(srv))}")
-                return 0
-            log(f"got time from {host} but could not set the clock")
-            return 0
-        log(f"SNTP pass {attempt}: no server answered; retrying")
-        time.sleep(5)
+SYNCED_STAMP = "/run/ginna-timesync.synced"   # /run is cleared every boot
+PERSIST_MAX_SEC = 45 * 60                     # give OOBE plenty of time to get on WiFi
+PERSIST_POLL_SEC = 5
 
-    log("all SNTP servers failed - trying HTTPS Date header")
+
+def try_once():
+    """One quick pass: every NTP server, then the HTTPS fallback.
+    Returns True as soon as the clock has been set (or we got a time but
+    couldn't set it - that's still 'reached a source')."""
+    for host in NTP_SERVERS:
+        srv = sntp_query(host)
+        if srv is None:
+            continue
+        skew = srv - time.time()
+        if apply(srv):
+            log(f"set from {host} (skew was {skew:+.1f}s) -> "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(srv))}")
+        else:
+            log(f"got time from {host} but could not set the clock")
+        return True
+
     for url in HTTPS_URLS:
         ts = https_query(url)
-        if ts is not None:
-            skew = ts - time.time()
-            if apply(ts):
-                log(f"set from {url} Date header (skew was {skew:+.1f}s)")
-                return 0
+        if ts is None:
+            continue
+        skew = ts - time.time()
+        if apply(ts):
+            log(f"set from {url} Date header (skew was {skew:+.1f}s)")
+        else:
+            log(f"got time from {url} but could not set the clock")
+        return True
 
-    log("could not reach any time source")
-    return 0
+    return False
+
+
+def main():
+    # --persist-until-synced: keep polling (cheap - a few UDP packets every few
+    # seconds) until the first successful sync of this boot, so the clock is
+    # right the instant WiFi comes up in the OOBE wizard, without depending on
+    # network-online.target firing. A one-shot pass otherwise (the .timer's
+    # hourly drift correction).
+    persist = ("--persist-until-synced" in sys.argv[1:]
+               and not os.path.exists(SYNCED_STAMP))
+
+    deadline = time.time() + PERSIST_MAX_SEC
+    announced_wait = False
+    while True:
+        if try_once():
+            try:
+                open(SYNCED_STAMP, "w").close()
+            except OSError:
+                pass
+            return 0
+        if not persist or time.time() >= deadline:
+            log("no time source reachable"
+                + (" within the persist window" if persist else ""))
+            return 0
+        if not announced_wait:
+            log("no network yet - polling until synced")
+            announced_wait = True
+        time.sleep(PERSIST_POLL_SEC)
 
 
 if __name__ == "__main__":
