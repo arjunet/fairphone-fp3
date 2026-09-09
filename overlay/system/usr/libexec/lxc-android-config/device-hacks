@@ -28,6 +28,15 @@ done
 # registers -> black screen). Backgrounded so it never blocks container bring-up.
 [ -x /usr/libexec/halium-hal-recover ] && /usr/libexec/halium-hal-recover >/var/log/halium-hal-recover.log 2>&1 &
 
+# ginna: systemd-timesyncd is masked (broken on 32-bit armhf, systemd #38222) and
+# the *.target.wants/ symlinks for its replacement don't survive this repo's
+# overlay merge, so kick it here. ginna-timesync.service is ordered
+# After=network-online.target, so it fires as soon as WiFi is up - including
+# during the OOBE wizard; the .timer handles the hourly re-sync. Backgrounded
+# (device-hacks.service is KillMode=process) so a slow/absent network can't stall
+# boot.
+systemctl start ginna-timesync.timer ginna-timesync.service >/dev/null 2>&1 &
+
 # Enable fix audio mic service, if disabled, which should
 # only happen on first boot or maybe after an OTA-update
 if ! systemctl --global -q is-enabled check-audio-mic.service; then

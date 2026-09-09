@@ -2,9 +2,9 @@
 Description=Re-run network time sync periodically (no RTC on this device)
 
 [Timer]
-OnBootSec=90s
-OnUnitActiveSec=1h
-AccuracySec=1min
+OnBootSec=45s
+OnUnitActiveSec=15min
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target
