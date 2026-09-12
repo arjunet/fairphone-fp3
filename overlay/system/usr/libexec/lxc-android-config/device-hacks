@@ -1,5 +1,20 @@
 #!/bin/sh
 
+# ginna: chrony.service runs as User=_chrony, a system user normally created
+# by adduser in chrony's postinst - which never runs, since this device's
+# rootfs-overrides mechanism unpacks .deb payloads directly with dpkg-deb -x
+# and skips all maintainer scripts. Without it chrony.service fails to start
+# (systemd exit 217/USER). systemd-sysusers is the standard declarative tool
+# for exactly this case; run it here (synchronously, in the foreground) so it
+# has completed before chrony.service - ordered After=device-hacks.service,
+# see overlay/system/usr/lib/systemd/system/chrony.service.d/ - ever tries to
+# start. Idempotent: safe to run every boot even once the user exists.
+if command -v systemd-sysusers >/dev/null 2>&1; then
+  systemd-sysusers /usr/libexec/ginna-chrony-sysusers.conf
+elif [ -x /usr/lib/systemd/systemd-sysusers ]; then
+  /usr/lib/systemd/systemd-sysusers /usr/libexec/ginna-chrony-sysusers.conf
+fi
+
 # Wait for the property system to be up.
 while [ ! -e /dev/socket/property_service ]; do sleep 0.1; done
 
