@@ -28,6 +28,15 @@ done
 # registers -> black screen). Backgrounded so it never blocks container bring-up.
 [ -x /usr/libexec/halium-hal-recover ] && /usr/libexec/halium-hal-recover >/var/log/halium-hal-recover.log 2>&1 &
 
+# ginna: install any preinstalled apps baked into the image
+# (usr/share/ginna-preinstalled-clicks/*.click) that aren't on
+# /opt/click.ubuntu.com yet - see usr/libexec/ginna-preinstall-clicks for why
+# this runs the real click install/register instead of faking click's own
+# package-database state. Backgrounded: installing a dozen apps on first boot
+# takes a while, and device-hacks.service is KillMode=process so it survives
+# past this script's own exit.
+[ -x /usr/libexec/ginna-preinstall-clicks ] && /usr/libexec/ginna-preinstall-clicks >/var/log/ginna-preinstall-clicks.log 2>&1 &
+
 # Enable fix audio mic service, if disabled, which should
 # only happen on first boot or maybe after an OTA-update
 if ! systemctl --global -q is-enabled check-audio-mic.service; then

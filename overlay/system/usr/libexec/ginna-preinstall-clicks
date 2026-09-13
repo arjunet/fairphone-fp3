@@ -1,0 +1,50 @@
+#!/bin/sh
+# ginna: install the preinstalled apps baked into the image
+# (usr/share/ginna-preinstalled-clicks/*.click) that aren't on
+# /opt/click.ubuntu.com yet.
+#
+# A real `click install` writes click's own internal package-database state
+# (.click/status, .click/available, .click/triggers/, lock files, the
+# .click/info/<pkg>.manifest/.list/.md5sums click derives at install time) -
+# genuine package-manager bookkeeping, not something safe to fake by hand-
+# crafting a tarball at image-build time. So instead of baking in that
+# expanded state directly, the image only ships the raw .click files, and
+# this script runs the real `click install` + `click register` commands
+# (proven working by hand: see the ginna app-preinstall session notes) the
+# first time each app is missing. Idempotent - cheap no-op for anything
+# already installed, safe to run every boot.
+#
+# ginna-click-resync (a separate, existing script) re-registers everything
+# already present under /opt/click.ubuntu.com on every boot, working around
+# this device's framework-mismatch hook-stripping bug; this script only
+# handles the one-time install step for apps not there yet.
+set -u
+
+U=phablet
+id "$U" >/dev/null 2>&1 || exit 0
+
+SRC=/usr/share/ginna-preinstalled-clicks
+[ -d "$SRC" ] || exit 0
+
+installed_pkgs=$(click list --user="$U" 2>/dev/null | awk '{print $1}')
+
+for click in "$SRC"/*.click; do
+    [ -e "$click" ] || continue
+    base=$(basename "$click" .click)
+    pkg=${base%_*_*}
+    rest=${base#${pkg}_}
+    ver=${rest%_*}
+
+    if echo "$installed_pkgs" | grep -qx "$pkg"; then
+        continue
+    fi
+
+    echo "ginna-preinstall-clicks: installing $pkg $ver"
+    if click install --user="$U" --allow-unauthenticated --force-missing-framework "$click" \
+       && click register --user="$U" "$pkg" "$ver"; then
+        echo "ginna-preinstall-clicks: $pkg $ver installed"
+    else
+        echo "ginna-preinstall-clicks: FAILED $pkg $ver"
+    fi
+done
+exit 0
