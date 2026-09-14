@@ -19,22 +19,54 @@
 # of the read-only rootfs. ginna-preinstall-clicks mirrors anything found
 # there into /opt/click.ubuntu.com (a real, writable copy) instead, where
 # registration actually works - see that script.
+#
+# Confirmed on-device 2026-09-14: `click register` can report success (exit
+# 0, no FAILED lines, click list shows the package) while silently writing
+# NO .desktop file at all - this happens when there's no real phablet D-Bus/
+# session yet (e.g. called from device-hacks, before lightdm/the greeter has
+# started one), as opposed to failing loudly. So don't trust a single clean
+# pass: if there are packages installed but zero .desktop files landed,
+# retry with a delay, up to a few minutes, since the actual fix is just
+# "wait until a session exists" and there's no way to know that in advance.
 set -u
 
 U=phablet
 id "$U" >/dev/null 2>&1 || exit 0
 
-n=0
-for cur in /opt/click.ubuntu.com/*/current; do
-    [ -e "$cur" ] || continue
-    pkg=$(basename "$(dirname "$cur")")
-    ver=$(basename "$(readlink -f "$cur")")
-    if click register --user="$U" "$pkg" "$ver" >/dev/null 2>&1; then
-        echo "ginna-click-resync: $pkg $ver"
-        n=$((n + 1))
-    else
-        echo "ginna-click-resync: FAILED $pkg $ver"
-    fi
-done
-echo "ginna-click-resync: re-registered $n click(s) for $U"
+HOME_DIR=$(getent passwd "$U" | cut -d: -f6)
+APPS_DIR="$HOME_DIR/.local/share/applications"
+
+desktop_count() {
+    set -- "$APPS_DIR"/*.desktop
+    [ -e "$1" ] && echo $# || echo 0
+}
+
+resync_once() {
+    n=0
+    for cur in /opt/click.ubuntu.com/*/current; do
+        [ -e "$cur" ] || continue
+        pkg=$(basename "$(dirname "$cur")")
+        ver=$(basename "$(readlink -f "$cur")")
+        if click register --user="$U" "$pkg" "$ver" >/dev/null 2>&1; then
+            echo "ginna-click-resync: $pkg $ver"
+            n=$((n + 1))
+        else
+            echo "ginna-click-resync: FAILED $pkg $ver"
+        fi
+    done
+    echo "ginna-click-resync: re-registered $n click(s) for $U"
+}
+
+click_count=$(click list --user="$U" 2>/dev/null | grep -c .)
+resync_once
+
+if [ "$click_count" -gt 0 ] && [ "$(desktop_count)" = 0 ]; then
+    tries=0
+    while [ "$(desktop_count)" = 0 ] && [ "$tries" -lt 12 ]; do
+        tries=$((tries + 1))
+        echo "ginna-click-resync: 0 .desktop files after resync (no session yet?) - retry $tries in 15s"
+        sleep 15
+        resync_once
+    done
+fi
 exit 0
