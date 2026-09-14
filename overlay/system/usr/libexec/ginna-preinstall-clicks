@@ -1,7 +1,14 @@
 #!/bin/sh
 # ginna: install the preinstalled apps baked into the image
-# (usr/share/ginna-preinstalled-clicks/*.click) that aren't on
+# (usr/libexec/ginna-preinstalled-clicks/*.click) that aren't on
 # /opt/click.ubuntu.com yet.
+#
+# The .click files live under usr/libexec/, not usr/share/ - confirmed on
+# 2026-09-14 that a brand-new usr/share/<name>/ directory never deploys
+# through this device's overlay merge (only nested subdirectories *inside*
+# an already-recognized tree like usr/libexec/ or usr/lib/systemd/system/
+# reliably do; a new top-level sibling under usr/share/ does not, same as
+# etc/default/ never deploying).
 #
 # A real `click install` writes click's own internal package-database state
 # (.click/status, .click/available, .click/triggers/, lock files, the
@@ -23,7 +30,7 @@ set -u
 U=phablet
 id "$U" >/dev/null 2>&1 || exit 0
 
-SRC=/usr/share/ginna-preinstalled-clicks
+SRC=/usr/libexec/ginna-preinstalled-clicks
 [ -d "$SRC" ] || exit 0
 
 installed_pkgs=$(click list --user="$U" 2>/dev/null | awk '{print $1}')
