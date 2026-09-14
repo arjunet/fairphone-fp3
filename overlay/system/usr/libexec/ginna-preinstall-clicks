@@ -22,9 +22,17 @@
 # already installed, safe to run every boot.
 #
 # ginna-click-resync (a separate, existing script) re-registers everything
-# already present under /opt/click.ubuntu.com on every boot, working around
-# this device's framework-mismatch hook-stripping bug; this script only
-# handles the one-time install step for apps not there yet.
+# present under /opt/click.ubuntu.com and /usr/share/click/preinstalled on
+# every boot, working around this device's framework-mismatch hook-stripping
+# bug. This script runs early (from device-hacks, before any real user/D-Bus
+# session exists), and confirmed on-device 2026-09-14: its own `click
+# register` call is not enough by itself that early - the app installs fine
+# (click list shows it) but its .desktop file never appears in the drawer.
+# Only a *later* run of ginna-click-resync (after a real session exists)
+# actually produces the .desktop file. So call it here too once anything's
+# been installed - it's cheap, idempotent, and gives a second, later-timed
+# chance beyond whatever ginna-click-resync.service's own boot-time trigger
+# manages on its own.
 set -u
 
 U=phablet
@@ -34,6 +42,7 @@ SRC=/usr/libexec/ginna-preinstalled-clicks
 [ -d "$SRC" ] || exit 0
 
 installed_pkgs=$(click list --user="$U" 2>/dev/null | awk '{print $1}')
+did_install=0
 
 for click in "$SRC"/*.click; do
     [ -e "$click" ] || continue
@@ -50,8 +59,14 @@ for click in "$SRC"/*.click; do
     if click install --user="$U" --allow-unauthenticated --force-missing-framework "$click" \
        && click register --user="$U" "$pkg" "$ver"; then
         echo "ginna-preinstall-clicks: $pkg $ver installed"
+        did_install=1
     else
         echo "ginna-preinstall-clicks: FAILED $pkg $ver"
     fi
 done
+
+if [ "$did_install" = 1 ] && [ -x /usr/libexec/ginna-click-resync ]; then
+    echo "ginna-preinstall-clicks: re-running ginna-click-resync for desktop hooks"
+    /usr/libexec/ginna-click-resync
+fi
 exit 0
