@@ -8,19 +8,22 @@
 # ut24.04-framework app.
 #
 # A plain `click register` re-fires the desktop hook regardless of framework.
-# Do that for every installed click, on every boot. Covers both click roots:
-# /opt/click.ubuntu.com (user-installed, via ginna-preinstall-clicks or
-# manual `click install --user=phablet`) and /usr/share/click/preinstalled
-# (the official rootfs-build preinstall root - e.g. notes.ubports ships there
-# and hits the exact same hook-stripping bug).
+# Do that for every installed click, on every boot.
+#
+# This only covers /opt/click.ubuntu.com (click's default, writable root -
+# user-installed, via ginna-preinstall-clicks or manual
+# `click install --user=phablet`). /usr/share/click/preinstalled (the
+# official rootfs-build preinstall root, e.g. notes.ubports) is NOT covered
+# here - confirmed on-device that `click register` against that root always
+# fails, because it needs to write a per-user marker into a tree that's part
+# of the read-only rootfs. ginna-preinstall-clicks mirrors anything found
+# there into /opt/click.ubuntu.com (a real, writable copy) instead, where
+# registration actually works - see that script.
 set -u
 
 U=phablet
 id "$U" >/dev/null 2>&1 || exit 0
 
-# /opt/click.ubuntu.com is click's default root - leave that call exactly as
-# proven working (no --root flag). /usr/share/click/preinstalled is not the
-# default, so those need --root explicitly or click won't find the manifest.
 n=0
 for cur in /opt/click.ubuntu.com/*/current; do
     [ -e "$cur" ] || continue
@@ -31,17 +34,6 @@ for cur in /opt/click.ubuntu.com/*/current; do
         n=$((n + 1))
     else
         echo "ginna-click-resync: FAILED $pkg $ver"
-    fi
-done
-for cur in /usr/share/click/preinstalled/*/current; do
-    [ -e "$cur" ] || continue
-    pkg=$(basename "$(dirname "$cur")")
-    ver=$(basename "$(readlink -f "$cur")")
-    if click register --user="$U" --root=/usr/share/click/preinstalled "$pkg" "$ver" >/dev/null 2>&1; then
-        echo "ginna-click-resync: $pkg $ver (preinstalled)"
-        n=$((n + 1))
-    else
-        echo "ginna-click-resync: FAILED $pkg $ver (preinstalled)"
     fi
 done
 echo "ginna-click-resync: re-registered $n click(s) for $U"

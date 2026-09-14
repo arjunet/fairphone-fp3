@@ -22,48 +22,80 @@
 # already installed, safe to run every boot.
 #
 # ginna-click-resync (a separate, existing script) re-registers everything
-# present under /opt/click.ubuntu.com and /usr/share/click/preinstalled on
-# every boot, working around this device's framework-mismatch hook-stripping
-# bug. This script runs early (from device-hacks, before any real user/D-Bus
-# session exists), and confirmed on-device 2026-09-14: its own `click
-# register` call is not enough by itself that early - the app installs fine
-# (click list shows it) but its .desktop file never appears in the drawer.
-# Only a *later* run of ginna-click-resync (after a real session exists)
-# actually produces the .desktop file. So call it here too once anything's
-# been installed - it's cheap, idempotent, and gives a second, later-timed
-# chance beyond whatever ginna-click-resync.service's own boot-time trigger
-# manages on its own.
+# present under /opt/click.ubuntu.com on every boot, working around this
+# device's framework-mismatch hook-stripping bug. This script runs early
+# (from device-hacks, before any real user/D-Bus session exists), and
+# confirmed on-device 2026-09-14: its own `click register` call is not
+# enough by itself that early - the app installs fine (click list shows it)
+# but its .desktop file never appears in the drawer. Only a *later* run of
+# ginna-click-resync (after a real session exists) actually produces the
+# .desktop file. So call it here too once anything's been installed or
+# mirrored - it's cheap, idempotent, and gives a second, later-timed chance
+# beyond whatever ginna-click-resync.service's own boot-time trigger manages
+# on its own.
 set -u
 
 U=phablet
 id "$U" >/dev/null 2>&1 || exit 0
 
-SRC=/usr/libexec/ginna-preinstalled-clicks
-[ -d "$SRC" ] || exit 0
-
-installed_pkgs=$(click list --user="$U" 2>/dev/null | awk '{print $1}')
 did_install=0
 
-for click in "$SRC"/*.click; do
-    [ -e "$click" ] || continue
-    base=$(basename "$click" .click)
-    pkg=${base%_*_*}
-    rest=${base#${pkg}_}
-    ver=${rest%_*}
+# The official rootfs build preinstalls some apps (currently just
+# notes.ubports) under /usr/share/click/preinstalled, which is part of the
+# read-only rootfs. `click register` can never succeed there - confirmed
+# on-device it needs to write a per-user marker into that same tree, and a
+# bare .desktop-file copy isn't enough either (lomiri-app-launch validates
+# the app ID against click's real registry and refuses to launch it: "Invalid
+# app ID"). So mirror anything found there into the writable
+# /opt/click.ubuntu.com instead, using the files click itself already
+# generated at image-build time (not hand-crafted here) - then register it
+# for real from the writable copy, exactly like every other app below.
+PREINSTALLED=/usr/share/click/preinstalled
+for cur in "$PREINSTALLED"/*/current; do
+    [ -e "$cur" ] || continue
+    pkg=$(basename "$(dirname "$cur")")
+    ver=$(basename "$(readlink -f "$cur")")
+    dest="/opt/click.ubuntu.com/$pkg/$ver"
+    [ -e "$dest" ] && continue
 
-    if echo "$installed_pkgs" | grep -qx "$pkg"; then
-        continue
-    fi
-
-    echo "ginna-preinstall-clicks: installing $pkg $ver"
-    if click install --user="$U" --allow-unauthenticated --force-missing-framework "$click" \
+    echo "ginna-preinstall-clicks: mirroring $pkg $ver from $PREINSTALLED"
+    mkdir -p "/opt/click.ubuntu.com/$pkg"
+    if cp -a "$PREINSTALLED/$pkg/$ver" "$dest" \
+       && ln -sfn "$ver" "/opt/click.ubuntu.com/$pkg/current" \
+       && chown -R clickpkg:clickpkg "/opt/click.ubuntu.com/$pkg" \
        && click register --user="$U" "$pkg" "$ver"; then
-        echo "ginna-preinstall-clicks: $pkg $ver installed"
+        echo "ginna-preinstall-clicks: $pkg $ver mirrored + registered"
         did_install=1
     else
-        echo "ginna-preinstall-clicks: FAILED $pkg $ver"
+        echo "ginna-preinstall-clicks: FAILED to mirror $pkg $ver"
     fi
 done
+
+SRC=/usr/libexec/ginna-preinstalled-clicks
+if [ -d "$SRC" ]; then
+    installed_pkgs=$(click list --user="$U" 2>/dev/null | awk '{print $1}')
+
+    for click in "$SRC"/*.click; do
+        [ -e "$click" ] || continue
+        base=$(basename "$click" .click)
+        pkg=${base%_*_*}
+        rest=${base#${pkg}_}
+        ver=${rest%_*}
+
+        if echo "$installed_pkgs" | grep -qx "$pkg"; then
+            continue
+        fi
+
+        echo "ginna-preinstall-clicks: installing $pkg $ver"
+        if click install --user="$U" --allow-unauthenticated --force-missing-framework "$click" \
+           && click register --user="$U" "$pkg" "$ver"; then
+            echo "ginna-preinstall-clicks: $pkg $ver installed"
+            did_install=1
+        else
+            echo "ginna-preinstall-clicks: FAILED $pkg $ver"
+        fi
+    done
+fi
 
 if [ "$did_install" = 1 ] && [ -x /usr/libexec/ginna-click-resync ]; then
     echo "ginna-preinstall-clicks: re-running ginna-click-resync for desktop hooks"
