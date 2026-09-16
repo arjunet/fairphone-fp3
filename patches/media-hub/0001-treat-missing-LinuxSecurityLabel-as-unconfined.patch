@@ -1,0 +1,30 @@
+--- a/src/service/apparmor/lomiri.cpp	2026-09-15 19:48:15.580794006 -0400
++++ b/src/service/apparmor/lomiri.cpp	2026-09-15 19:48:15.582794016 -0400
+@@ -163,7 +163,7 @@
+     QDBusPendingCall call = QDBusConnection::sessionBus().asyncCall(msg);
+     QDBusPendingCallWatcher *callWatcher = new QDBusPendingCallWatcher(call);
+     QObject::connect(callWatcher, &QDBusPendingCallWatcher::finished,
+-                     [cb](QDBusPendingCallWatcher *callWatcher) {
++                     [cb, name](QDBusPendingCallWatcher *callWatcher) {
+         QDBusReply<QVariantMap> reply(*callWatcher);
+         QString appId;
+         if (reply.isValid()) {
+@@ -178,6 +178,18 @@
+             qWarning() << "Error getting app ID:" << error.name() <<
+                 error.message();
+         }
++        if (appId.isEmpty()) {
++            // ginna: this device's kernel AppArmor build doesn't implement
++            // the SO_PEERSEC socket hook GetConnectionCredentials relies on
++            // (confirmed via strace: getsockopt(..., SO_PEERSEC, ...) fails
++            // ENOPROTOOPT for every caller, confined or not), so
++            // LinuxSecurityLabel is never present here for anyone. Treat
++            // that the same as an explicitly unconfined caller instead of
++            // throwing and taking the whole service down.
++            qWarning() << "No LinuxSecurityLabel for" << name <<
++                "- treating as unconfined";
++            appId = apparmor::lomiri::unconfined;
++        }
+         cb(apparmor::lomiri::Context(appId));
+         callWatcher->deleteLater();
+     });
