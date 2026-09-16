@@ -25,9 +25,18 @@
 # NO .desktop file at all - this happens when there's no real phablet D-Bus/
 # session yet (e.g. called from device-hacks, before lightdm/the greeter has
 # started one), as opposed to failing loudly. So don't trust a single clean
-# pass: if there are packages installed but zero .desktop files landed,
-# retry with a delay, up to a few minutes, since the actual fix is just
-# "wait until a session exists" and there's no way to know that in advance.
+# pass: if any package is missing its own .desktop file, retry with a delay,
+# up to a few minutes, since the actual fix is just "wait until a session
+# exists" and there's no way to know that in advance.
+#
+# Confirmed on-device 2026-09-15: checking "is $APPS_DIR non-empty at all"
+# (instead of per-package) is not good enough - on a reflash where /opt
+# (and so ~phablet) carries over state from a previous boot, a package that
+# already had a .desktop file from before (e.g. something installed outside
+# ginna-preinstall-clicks) makes the directory non-empty from the start, so
+# the "0 desktop files" retry trigger never fires even though every package
+# actually registered *this* boot is still missing its own file. Check each
+# registered package's own .desktop file individually instead.
 set -u
 
 U=phablet
@@ -36,9 +45,21 @@ id "$U" >/dev/null 2>&1 || exit 0
 HOME_DIR=$(getent passwd "$U" | cut -d: -f6)
 APPS_DIR="$HOME_DIR/.local/share/applications"
 
-desktop_count() {
-    set -- "$APPS_DIR"/*.desktop
-    [ -e "$1" ] && echo $# || echo 0
+has_desktop_file() {
+    # $1 = click package name
+    for f in "$APPS_DIR/$1"*.desktop; do
+        [ -e "$f" ] && return 0
+    done
+    return 1
+}
+
+all_packages_have_desktop_files() {
+    for cur in /opt/click.ubuntu.com/*/current; do
+        [ -e "$cur" ] || continue
+        pkg=$(basename "$(dirname "$cur")")
+        has_desktop_file "$pkg" || return 1
+    done
+    return 0
 }
 
 resync_once() {
@@ -60,11 +81,11 @@ resync_once() {
 click_count=$(click list --user="$U" 2>/dev/null | grep -c .)
 resync_once
 
-if [ "$click_count" -gt 0 ] && [ "$(desktop_count)" = 0 ]; then
+if [ "$click_count" -gt 0 ] && ! all_packages_have_desktop_files; then
     tries=0
-    while [ "$(desktop_count)" = 0 ] && [ "$tries" -lt 12 ]; do
+    while ! all_packages_have_desktop_files && [ "$tries" -lt 12 ]; do
         tries=$((tries + 1))
-        echo "ginna-click-resync: 0 .desktop files after resync (no session yet?) - retry $tries in 15s"
+        echo "ginna-click-resync: some package(s) still missing a .desktop file - retry $tries in 15s"
         sleep 15
         resync_once
     done
