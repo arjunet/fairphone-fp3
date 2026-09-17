@@ -8,5 +8,11 @@ Type=oneshot
 ExecStartPre=/bin/sleep 20
 ExecStart=/usr/libexec/ginna-click-resync
 
+# Not what actually runs this every boot - confirmed on-device that neither
+# this [Install] symlink nor a lightdm.service.d Wants= drop-in ever fires
+# it (same overlay-merge bug as ginna-timesync before it: target.wants/
+# symlinks land 'disabled'). device-hacks calls the script directly instead.
+# Kept only so `systemctl start ginna-click-resync.service` still works for
+# manual/debug runs.
 [Install]
 WantedBy=multi-user.target

@@ -32,10 +32,24 @@ done
 # (usr/share/ginna-preinstalled-clicks/*.click) that aren't on
 # /opt/click.ubuntu.com yet - see usr/libexec/ginna-preinstall-clicks for why
 # this runs the real click install/register instead of faking click's own
-# package-database state. Backgrounded: installing a dozen apps on first boot
-# takes a while, and device-hacks.service is KillMode=process so it survives
-# past this script's own exit.
-[ -x /usr/libexec/ginna-preinstall-clicks ] && /usr/libexec/ginna-preinstall-clicks >/var/log/ginna-preinstall-clicks.log 2>&1 &
+# package-database state. Then re-register every click's desktop hook
+# (ginna-click-resync), which desktop hooks don't survive a reboot on ginna -
+# see that script for why. Neither script's own systemd unit enablement
+# actually takes effect through this repo's overlay merge (same class of bug
+# as ginna-timesync before it: the merged *.target.wants/ symlink lands
+# 'disabled' on-device, and a lightdm.service.d Wants= drop-in was also
+# confirmed not to fire it), so this device-hacks call - the one hook proven
+# to run every boot on ginna - is the only thing that actually runs
+# click-resync every boot, not just the first one after install. Sequenced
+# in one subshell (not two independent backgrounded jobs) so click-resync
+# sees whatever preinstall-clicks just installed instead of a snapshot from
+# before it finished. Backgrounded as a pair: installing a dozen apps plus
+# up to ~3 minutes of click-resync's own desktop-file retries takes a while,
+# and device-hacks.service is KillMode=process so it survives past this
+# script's own exit.
+( [ -x /usr/libexec/ginna-preinstall-clicks ] && /usr/libexec/ginna-preinstall-clicks >/var/log/ginna-preinstall-clicks.log 2>&1
+  [ -x /usr/libexec/ginna-click-resync ] && /usr/libexec/ginna-click-resync >/var/log/ginna-click-resync.log 2>&1 ) &
+
 
 # Enable fix audio mic service, if disabled, which should
 # only happen on first boot or maybe after an OTA-update
