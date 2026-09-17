@@ -37,6 +37,17 @@
 # the "0 desktop files" retry trigger never fires even though every package
 # actually registered *this* boot is still missing its own file. Check each
 # registered package's own .desktop file individually instead.
+#
+# Confirmed on-device 2026-09-17: gating the retry loop on `click list`'s own
+# output (a separate click subprocess call) hits the exact same "no real
+# session yet" unreliability documented above for `click register` - on a
+# boot where it fires this early, `click list` came back empty even though
+# all 12 packages were genuinely installed on disk, so the retry loop never
+# triggered despite every single .desktop file being missing (only a lone,
+# false-success resync_once pass ran). Determine whether there's anything to
+# retry for from the filesystem instead (the same /opt/click.ubuntu.com/*
+# glob resync_once and all_packages_have_desktop_files already use), not
+# from a click command that can silently no-op this early too.
 set -u
 
 U=phablet
@@ -62,6 +73,13 @@ all_packages_have_desktop_files() {
     return 0
 }
 
+any_packages_installed() {
+    for cur in /opt/click.ubuntu.com/*/current; do
+        [ -e "$cur" ] && return 0
+    done
+    return 1
+}
+
 resync_once() {
     n=0
     for cur in /opt/click.ubuntu.com/*/current; do
@@ -78,10 +96,9 @@ resync_once() {
     echo "ginna-click-resync: re-registered $n click(s) for $U"
 }
 
-click_count=$(click list --user="$U" 2>/dev/null | grep -c .)
 resync_once
 
-if [ "$click_count" -gt 0 ] && ! all_packages_have_desktop_files; then
+if any_packages_installed && ! all_packages_have_desktop_files; then
     tries=0
     while ! all_packages_have_desktop_files && [ "$tries" -lt 12 ]; do
         tries=$((tries + 1))
